@@ -1,0 +1,249 @@
+import React, { useState, useMemo } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+
+const initialPolicies = `if (hazard_present > 0.9) trigger_emergency_stop();
+if (hazard_present > 0.8 && operator_command_label === "STOP") trigger_emergency_stop();
+if (vision.occlusion > 0.8 && acoustic.hazard_confidence > 0.8) trigger_emergency_stop();`;
+
+const mockLogs = (() => {
+  const devices = ["robot-1", "robot-2", "robot-3"];
+  const locations = ["zone-a", "zone-b", "zone-c"];
+  const commands = ["MOVE", "STOP"];
+
+  const logs = [];
+  const start = new Date("2025-04-27T08:00:00Z").getTime();
+  const end = new Date("2026-04-29T18:00:00Z").getTime();
+
+  for (let t = start; t <= end; t += 1000 * 60 * 5) {
+    const date = new Date(t);
+    const hour = date.getUTCHours();
+
+    const isPeak = hour === 10 || hour === 14;
+    if (!isPeak && Math.random() < 0.7) continue;
+
+    const hazard = Math.random();
+
+    logs.push({
+      timestamp: date.toISOString(),
+      data: {
+        device_id: devices[Math.floor(Math.random() * devices.length)],
+        location_id: locations[Math.floor(Math.random() * locations.length)],
+        vision: {
+          occlusion: Math.random()
+        },
+        human_present: Math.random(),
+        acoustic: {
+          operator_verified: 1,
+          operator_command_label:
+            hazard > 0.75 ? "STOP" : commands[Math.floor(Math.random() * commands.length)],
+          hazard_confidence: Math.random()
+        },
+        hazard_present: hazard
+      }
+    });
+  }
+
+  return logs;
+})();
+
+export default function Mockup() {
+  const hashDeviceId = (id) => {
+    let hash = 0;
+    for (let i = 0; i < id.length; i++) {
+      hash = (hash << 5) - hash + id.charCodeAt(i);
+      hash |= 0;
+    }
+    return "dev_" + Math.abs(hash).toString(16);
+  };
+
+  const [selectedLog, setSelectedLog] = useState(null);
+  const [policyFilter, setPolicyFilter] = useState("all");
+  const [deviceFilter, setDeviceFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("all");
+  const [editMode, setEditMode] = useState(false);
+  const [policyText, setPolicyText] = useState(initialPolicies);
+
+  const maxTime = useMemo(() => {
+    return Math.max(...mockLogs.map(l => new Date(l.timestamp).getTime()));
+  }, []);
+
+  const devices = useMemo(() => {
+    return Array.from(new Set(mockLogs.map(l => l.data.device_id)));
+  }, []);
+
+  const isPolicyTriggered = (log) => {
+    const h = log.data.hazard_present;
+    const cmd = log.data.acoustic.operator_command_label;
+    const occlusion = log.data.vision.occlusion;
+    const conf = log.data.acoustic.hazard_confidence;
+
+    return (
+      h > 0.9 ||
+      (h > 0.8 && cmd === "STOP") ||
+      (occlusion > 0.8 && conf > 0.8)
+    );
+  };
+
+  const filteredLogs = useMemo(() => {
+    return mockLogs.filter(log => {
+      const matchesPolicy =
+        policyFilter === "all" ||
+        (policyFilter === "triggered" && isPolicyTriggered(log)) ||
+        (policyFilter === "clear" && !isPolicyTriggered(log));
+
+      const matchesDevice =
+        deviceFilter === "all" || log.data.device_id === deviceFilter;
+
+      const logTime = new Date(log.timestamp).getTime();
+      let matchesDate = true;
+
+      if (dateFilter === "last3") {
+        matchesDate = logTime >= maxTime - 3 * 24 * 60 * 60 * 1000;
+      } else if (dateFilter === "last30") {
+        matchesDate = logTime >= maxTime - 30 * 24 * 60 * 60 * 1000;
+      }
+
+      return matchesPolicy && matchesDevice && matchesDate;
+    });
+  }, [policyFilter, deviceFilter, dateFilter, maxTime]);
+
+  const volumeData = useMemo(() => {
+    const buckets = {};
+
+    filteredLogs.forEach((log) => {
+      const date = new Date(log.timestamp);
+      const key = date.toISOString().slice(0, 13);
+      buckets[key] = (buckets[key] || 0) + 1;
+    });
+
+    return Object.entries(buckets)
+      .map(([hour, count]) => ({ hour, count }))
+      .sort((a, b) => a.hour.localeCompare(b.hour));
+  }, [filteredLogs]);
+
+  const checkPolicy = (log) => {
+    const h = log.data.hazard_present;
+    const cmd = log.data.acoustic.operator_command_label;
+    const occlusion = log.data.vision.occlusion;
+    const conf = log.data.acoustic.hazard_confidence;
+
+    if (h > 0.9) return "Policy Triggered: Emergency Stop (High Hazard)";
+    if (h > 0.8 && cmd === "STOP") return "Policy Triggered: Emergency Stop (Operator Command)";
+    if (occlusion > 0.8 && conf > 0.8) return "Policy Triggered: Emergency Stop (Vision + Acoustic Confidence)";
+    return "No Policy Triggered";
+  };
+
+  const Filters = (
+    <Card>
+      <CardContent className="p-4">
+        <h2 className="text-xl mb-4">Filters</h2>
+
+        <div className="flex gap-2 flex-wrap">
+          <select className="border rounded px-2 py-1" value={policyFilter} onChange={(e) => setPolicyFilter(e.target.value)}>
+            <option value="all">All Logs</option>
+            <option value="triggered">Policy Triggered</option>
+            <option value="clear">Clear</option>
+          </select>
+
+          <select className="border rounded px-2 py-1" value={deviceFilter} onChange={(e) => setDeviceFilter(e.target.value)}>
+            <option value="all">All Devices</option>
+            {devices.map(d => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+
+          <select className="border rounded px-2 py-1" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}>
+            <option value="all">All Time</option>
+            <option value="last3">Last 3 Days</option>
+            <option value="last30">Last 30 Days</option>
+          </select>
+        </div>
+      </CardContent>
+    </Card>
+  );
+
+  return (
+    <div className="p-6 space-y-6">
+      {Filters}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <Card>
+          <CardContent className="p-4">
+            <h2 className="text-xl mb-4">Logs</h2>
+
+            <div className="space-y-2 max-h-96 overflow-auto">
+              {filteredLogs.map((log, i) => (
+                <Button key={i} variant="outline" onClick={() => setSelectedLog(log)}>
+                  {log.timestamp}
+                </Button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4">
+            <h2 className="text-xl mb-4">Log Details</h2>
+            {selectedLog ? (
+              <pre className="text-sm bg-gray-100 p-2 rounded">
+                {JSON.stringify({
+                  ...selectedLog.data,
+                  device_id: hashDeviceId(selectedLog.data.device_id)
+                }, null, 2)}
+              </pre>
+            ) : (
+              <p>Select a log</p>
+            )}
+            {selectedLog && <p className="mt-4 font-semibold">{checkPolicy(selectedLog)}</p>}
+          </CardContent>
+        </Card>
+
+        <Card className="col-span-1 md:col-span-2">
+          <CardContent className="p-4">
+            <h2 className="text-xl mb-4">Volume (Logs per Hour)</h2>
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={volumeData}>
+                <XAxis dataKey="hour" />
+                <YAxis />
+                <Tooltip />
+                <Line type="monotone" dataKey="count" />
+              </LineChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        <Card className="col-span-1 md:col-span-2">
+          <CardContent className="p-4">
+            <h2 className="text-xl mb-4">Policies</h2>
+
+            <div className="flex gap-2 mb-2">
+              <Button onClick={() => setEditMode(!editMode)}>
+                {editMode ? "Cancel" : "Edit"}
+              </Button>
+
+              {editMode && (
+                <Button onClick={() => setEditMode(false)}>
+                  Save
+                </Button>
+              )}
+            </div>
+
+            {editMode ? (
+              <textarea
+                className="w-full h-40 p-2 border rounded font-mono text-sm"
+                value={policyText}
+                onChange={(e) => setPolicyText(e.target.value)}
+              />
+            ) : (
+              <pre className="bg-gray-100 p-2 rounded text-sm whitespace-pre-wrap">
+                {policyText}
+              </pre>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
